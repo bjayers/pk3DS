@@ -297,6 +297,7 @@ public partial class XYWE : Form
     private string[] encdatapaths;
     private string[] filepaths;
     private Button B_Import;
+    private Button B_ExportNames;
 
     private static readonly int[] Rates12 = [10, 10, 10, 10, 10, 10, 10, 10, 10, 5, 4, 1];
     private static readonly int[] Rates5 = [50, 30, 15, 4, 1];
@@ -332,6 +333,17 @@ public partial class XYWE : Form
         };
         B_Import.Click += B_Import_Click;
         Controls.Add(B_Import);
+
+        B_ExportNames = new Button
+        {
+            Text = "Export Names",
+            Location = new Point(B_Import.Right + 6, B_Import.Top),
+            Size = B_Dump.Size,
+            Enabled = false,
+            UseVisualStyleBackColor = true
+        };
+        B_ExportNames.Click += B_ExportNames_Click;
+        Controls.Add(B_ExportNames);
     }
 
     private void Load_XYWE()
@@ -371,6 +383,7 @@ public partial class XYWE : Form
         CB_LocationID.DataSource = LocationNames;
         B_Save.Enabled = B_Dump.Enabled = B_Randomize.Enabled = true;
         if (B_Import != null) B_Import.Enabled = true;
+        if (B_ExportNames != null) B_ExportNames.Enabled = true;
         CB_LocationID.Enabled = true;
         CB_LocationID_SelectedIndexChanged(null, null);
     }
@@ -666,6 +679,28 @@ public partial class XYWE : Form
     }
 
 
+    private void B_ExportNames_Click(object sender, EventArgs e)
+    {
+        if (specieslist == null || specieslist.Length == 0)
+        {
+            WinFormsUtil.Alert("Species list not loaded.");
+            return;
+        }
+
+        using var save = new SaveFileDialog
+        {
+            FileName = "Pokemon_Names.txt",
+            Filter = "Text File|*.txt",
+            Title = "Export Pokémon Names"
+        };
+        if (save.ShowDialog() != DialogResult.OK) return;
+
+        // One name per line, skip the empty "---" entry at index 0 if desired, but include all for completeness
+        var names = specieslist.Where(n => !string.IsNullOrWhiteSpace(n) && n != "---").ToArray();
+        File.WriteAllLines(save.FileName, names);
+        WinFormsUtil.Alert($"Exported {names.Length} Pokémon names.");
+    }
+
     private void B_Import_Click(object sender, EventArgs e)
     {
         using var open = new OpenFileDialog
@@ -805,16 +840,74 @@ public partial class XYWE : Form
         {
             int idx = offset + i;
             var s = slots[i];
-            int speciesIdx = Array.IndexOf(specieslist, s.Species);
-            if (speciesIdx < 0)
-                speciesIdx = Array.FindIndex(specieslist, x => string.Equals(x, s.Species, StringComparison.OrdinalIgnoreCase));
-            if (speciesIdx < 0)
-                speciesIdx = 0;
+            int speciesIdx = FindSpeciesIndex(s.Species);
             All_Species[idx].SelectedIndex = speciesIdx;
             All_Form[idx].Value = Math.Clamp(s.Form, 0, (int)All_Form[idx].Maximum);
             All_Min[idx].Value = Math.Clamp(s.MinLevel, (int)All_Min[idx].Minimum, (int)All_Min[idx].Maximum);
             All_Max[idx].Value = Math.Clamp(s.MaxLevel, (int)All_Max[idx].Minimum, (int)All_Max[idx].Maximum);
         }
+    }
+
+    private int FindSpeciesIndex(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name == "---")
+            return 0;
+
+        // Exact
+        int idx = Array.IndexOf(specieslist, name);
+        if (idx >= 0) return idx;
+
+        // Case-insensitive
+        idx = Array.FindIndex(specieslist, x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0) return idx;
+
+        // Closest match by Levenshtein (only if reasonably close)
+        int bestIdx = 0;
+        int bestDist = int.MaxValue;
+        string target = name.ToLowerInvariant();
+        for (int i = 1; i < specieslist.Length; i++) // skip ---
+        {
+            if (string.IsNullOrEmpty(specieslist[i])) continue;
+            int dist = LevenshteinDistance(target, specieslist[i].ToLowerInvariant());
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestIdx = i;
+            }
+        }
+
+        // Accept if distance is small relative to name length (typos of 1-2 chars usually)
+        int maxAccept = Math.Max(1, name.Length / 5);
+        if (bestDist <= maxAccept)
+            return bestIdx;
+
+        // No good match → none
+        return 0;
+    }
+
+    private static int LevenshteinDistance(string a, string b)
+    {
+        if (string.IsNullOrEmpty(a)) return b?.Length ?? 0;
+        if (string.IsNullOrEmpty(b)) return a.Length;
+
+        int n = a.Length;
+        int m = b.Length;
+        var d = new int[n + 1, m + 1];
+
+        for (int i = 0; i <= n; i++) d[i, 0] = i;
+        for (int j = 0; j <= m; j++) d[0, j] = j;
+
+        for (int i = 1; i <= n; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                d[i, j] = Math.Min(
+                    Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
+                    d[i - 1, j - 1] + cost);
+            }
+        }
+        return d[n, m];
     }
 
     // JSON models
