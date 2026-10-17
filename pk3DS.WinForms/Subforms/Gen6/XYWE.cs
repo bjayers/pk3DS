@@ -817,22 +817,52 @@ public partial class XYWE : Form
             ClearData();
             return;
         }
-        ApplySlots(loc.Slots.Grass, OffGrass);
-        ApplySlots(loc.Slots.YellowFlowers, OffYellow);
-        ApplySlots(loc.Slots.PurpleFlowers, OffPurple);
-        ApplySlots(loc.Slots.RedFlowers, OffRed);
-        ApplySlots(loc.Slots.RoughTerrain, OffRT);
-        ApplySlots(loc.Slots.Surfing, OffSurf);
-        ApplySlots(loc.Slots.RockSmash, OffRock);
-        ApplySlots(loc.Slots.OldRod, OffOld);
-        ApplySlots(loc.Slots.GoodRod, OffGood);
-        ApplySlots(loc.Slots.SuperRod, OffSuper);
-        ApplySlots(loc.Slots.HordeA, OffHordeA);
-        ApplySlots(loc.Slots.HordeB, OffHordeB);
-        ApplySlots(loc.Slots.HordeC, OffHordeC);
+
+        // First pass: collect every species in this location that successfully matches
+        var validSpecies = new List<int>();
+        CollectValidSpecies(loc.Slots.Grass, validSpecies);
+        CollectValidSpecies(loc.Slots.YellowFlowers, validSpecies);
+        CollectValidSpecies(loc.Slots.PurpleFlowers, validSpecies);
+        CollectValidSpecies(loc.Slots.RedFlowers, validSpecies);
+        CollectValidSpecies(loc.Slots.RoughTerrain, validSpecies);
+        CollectValidSpecies(loc.Slots.Surfing, validSpecies);
+        CollectValidSpecies(loc.Slots.RockSmash, validSpecies);
+        CollectValidSpecies(loc.Slots.OldRod, validSpecies);
+        CollectValidSpecies(loc.Slots.GoodRod, validSpecies);
+        CollectValidSpecies(loc.Slots.SuperRod, validSpecies);
+        CollectValidSpecies(loc.Slots.HordeA, validSpecies);
+        CollectValidSpecies(loc.Slots.HordeB, validSpecies);
+        CollectValidSpecies(loc.Slots.HordeC, validSpecies);
+
+        // If nothing matched at all, we have no safe fallback — leave as none (caller can decide)
+        // Otherwise use the collected valid ones for any unmatched slots
+        ApplySlots(loc.Slots.Grass, OffGrass, validSpecies);
+        ApplySlots(loc.Slots.YellowFlowers, OffYellow, validSpecies);
+        ApplySlots(loc.Slots.PurpleFlowers, OffPurple, validSpecies);
+        ApplySlots(loc.Slots.RedFlowers, OffRed, validSpecies);
+        ApplySlots(loc.Slots.RoughTerrain, OffRT, validSpecies);
+        ApplySlots(loc.Slots.Surfing, OffSurf, validSpecies);
+        ApplySlots(loc.Slots.RockSmash, OffRock, validSpecies);
+        ApplySlots(loc.Slots.OldRod, OffOld, validSpecies);
+        ApplySlots(loc.Slots.GoodRod, OffGood, validSpecies);
+        ApplySlots(loc.Slots.SuperRod, OffSuper, validSpecies);
+        ApplySlots(loc.Slots.HordeA, OffHordeA, validSpecies);
+        ApplySlots(loc.Slots.HordeB, OffHordeB, validSpecies);
+        ApplySlots(loc.Slots.HordeC, OffHordeC, validSpecies);
     }
 
-    private void ApplySlots(List<SlotJson> slots, int offset)
+    private void CollectValidSpecies(List<SlotJson> slots, List<int> valid)
+    {
+        if (slots == null) return;
+        foreach (var s in slots)
+        {
+            int idx = FindSpeciesIndex(s.Species);
+            if (idx > 0 && !valid.Contains(idx))
+                valid.Add(idx);
+        }
+    }
+
+    private void ApplySlots(List<SlotJson> slots, int offset, List<int> validFallback)
     {
         if (slots == null) return;
         int maxSlots = Math.Min(slots.Count, All_Species.Length - offset);
@@ -841,6 +871,14 @@ public partial class XYWE : Form
             int idx = offset + i;
             var s = slots[i];
             int speciesIdx = FindSpeciesIndex(s.Species);
+
+            // If unmatched, grab another valid species from this location
+            if (speciesIdx <= 0 && validFallback.Count > 0)
+            {
+                // Simple round-robin / pick based on slot index so it's deterministic
+                speciesIdx = validFallback[i % validFallback.Count];
+            }
+
             All_Species[idx].SelectedIndex = speciesIdx;
             All_Form[idx].Value = Math.Clamp(s.Form, 0, (int)All_Form[idx].Maximum);
             All_Min[idx].Value = Math.Clamp(s.MinLevel, (int)All_Min[idx].Minimum, (int)All_Min[idx].Maximum);
