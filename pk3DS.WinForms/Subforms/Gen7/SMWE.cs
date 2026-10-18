@@ -62,20 +62,22 @@ public partial class SMWE : Form
     {
         B_Dump.Text = "Dump JSON";
 
+        // Place Import to the left of Dump JSON so it stays on-screen
         B_Import = new Button
         {
             Text = "Import JSON",
-            Location = new Point(B_Dump.Right + 6, B_Dump.Top),
+            Location = new Point(B_Dump.Left - B_Dump.Width - 6, B_Dump.Top),
             Size = B_Dump.Size,
             UseVisualStyleBackColor = true
         };
         B_Import.Click += B_Import_Click;
         Controls.Add(B_Import);
 
+        // Place Export Names further right (past the existing Export Tables button)
         B_ExportNames = new Button
         {
             Text = "Export Names",
-            Location = new Point(B_Import.Right + 6, B_Import.Top),
+            Location = new Point(B_Dump.Right + 6 + 114, B_Dump.Top), // 114 ≈ Export Tables width + gap
             Size = B_Dump.Size,
             UseVisualStyleBackColor = true
         };
