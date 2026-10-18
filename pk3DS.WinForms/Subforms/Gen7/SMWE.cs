@@ -1,9 +1,12 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows.Forms;
 
 using pk3DS.Core;
@@ -48,6 +51,36 @@ public partial class SMWE : Form
             new ToolTip().SetToolTip(sos[i], $"Table Selection Rate: {rates[i]}%");
 
         // ExportEncounters("um", "uu");
+
+        SetupJsonButtons();
+    }
+
+    private Button B_Import;
+    private Button B_ExportNames;
+
+    private void SetupJsonButtons()
+    {
+        B_Dump.Text = "Dump JSON";
+
+        B_Import = new Button
+        {
+            Text = "Import JSON",
+            Location = new Point(B_Dump.Right + 6, B_Dump.Top),
+            Size = B_Dump.Size,
+            UseVisualStyleBackColor = true
+        };
+        B_Import.Click += B_Import_Click;
+        Controls.Add(B_Import);
+
+        B_ExportNames = new Button
+        {
+            Text = "Export Names",
+            Location = new Point(B_Import.Right + 6, B_Import.Top),
+            Size = B_Dump.Size,
+            UseVisualStyleBackColor = true
+        };
+        B_ExportNames.Click += B_ExportNames_Click;
+        Controls.Add(B_ExportNames);
     }
 
     private NumericUpDown[] LoadRateNUD()
@@ -379,13 +412,274 @@ public partial class SMWE : Form
 
     private void DumpTables(object sender, EventArgs e)
     {
-        using var sfd = new SaveFileDialog { FileName = "EncounterTables.txt" };
+        using var sfd = new SaveFileDialog
+        {
+            FileName = "SM_Encounters.json",
+            Filter = "JSON|*.json",
+            Title = "Export Encounter Tables (JSON)"
+        };
         if (sfd.ShowDialog() != DialogResult.OK)
             return;
-        var sb = new StringBuilder();
-        foreach (var Map in Areas)
-            sb.Append(Map.GetSummary(speciesList));
-        File.WriteAllText(sfd.FileName, sb.ToString());
+
+        var data = new EncounterJson
+        {
+            Game = "SM",
+            Areas = Areas.Select(BuildAreaJson).ToList()
+        };
+
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+        string json = JsonSerializer.Serialize(data, options);
+        File.WriteAllText(sfd.FileName, json);
+        WinFormsUtil.Alert($"Exported {data.Areas.Count} areas to JSON.");
+    }
+
+    private AreaJson BuildAreaJson(Area7 area)
+    {
+        var aj = new AreaJson
+        {
+            FileNumber = area.FileNumber,
+            Name = area.Name,
+            HasTables = area.HasTables,
+            Tables = area.Tables.Select(BuildTableJson).ToList()
+        };
+        return aj;
+    }
+
+    private TableJson BuildTableJson(EncounterTable table)
+    {
+        var tj = new TableJson
+        {
+            MinLevel = table.MinLevel,
+            MaxLevel = table.MaxLevel,
+            Rates = (int[])table.Rates.Clone(),
+            BaseSlots = BuildSlots(table.Encounter7s[0]),
+            SosTables = table.Encounter7s.Skip(1).Take(7).Select(BuildSlots).ToList(),
+            WeatherSlots = BuildSlots(table.AdditionalSOS)
+        };
+        return tj;
+    }
+
+    private List<SlotJson> BuildSlots(Encounter7[] slots)
+    {
+        return slots.Select(s => new SlotJson
+        {
+            Species = speciesList[(int)s.Species],
+            Form = (int)s.Forme
+        }).ToList();
+    }
+
+    private void B_ExportNames_Click(object sender, EventArgs e)
+    {
+        using var sfd = new SaveFileDialog
+        {
+            FileName = "Pokemon_Names.txt",
+            Filter = "Text File|*.txt",
+            Title = "Export Pokémon Names"
+        };
+        if (sfd.ShowDialog() != DialogResult.OK) return;
+
+        var names = speciesList.Where(n => !string.IsNullOrWhiteSpace(n) && n != "(None)").ToArray();
+        File.WriteAllLines(sfd.FileName, names);
+        WinFormsUtil.Alert($"Exported {names.Length} Pokémon names.");
+    }
+
+    private void B_Import_Click(object sender, EventArgs e)
+    {
+        using var ofd = new OpenFileDialog
+        {
+            Filter = "JSON|*.json",
+            Title = "Import Encounter Tables (JSON)"
+        };
+        if (ofd.ShowDialog() != DialogResult.OK) return;
+
+        EncounterJson data;
+        try
+        {
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            data = JsonSerializer.Deserialize<EncounterJson>(File.ReadAllText(ofd.FileName), options);
+        }
+        catch (Exception ex)
+        {
+            WinFormsUtil.Error("Failed to parse JSON", ex.Message);
+            return;
+        }
+
+        if (data?.Areas == null)
+        {
+            WinFormsUtil.Alert("Invalid JSON format.");
+            return;
+        }
+
+        int applied = 0;
+        foreach (var aj in data.Areas)
+        {
+            var area = Areas.FirstOrDefault(a => a.FileNumber == aj.FileNumber);
+            if (area == null || !area.HasTables || aj.Tables == null)
+                continue;
+
+            // Collect valid species across the whole area for fallback
+            var valid = new List<int>();
+            foreach (var tj in aj.Tables)
+                CollectValid(tj, valid);
+
+            for (int i = 0; i < Math.Min(area.Tables.Count, aj.Tables.Count); i++)
+            {
+                ApplyTable(area.Tables[i], aj.Tables[i], valid);
+                area.Tables[i].Write();
+            }
+
+            encdata[area.FileNumber] = Area7.GetDayNightTableBinary(area.Tables);
+            applied++;
+        }
+
+        // Refresh current view
+        UpdatePanel(null, null);
+        WinFormsUtil.Alert($"Imported and applied {applied} areas.");
+    }
+
+    private void CollectValid(TableJson tj, List<int> valid)
+    {
+        if (tj == null) return;
+        void AddSlots(List<SlotJson> slots)
+        {
+            if (slots == null) return;
+            foreach (var s in slots)
+            {
+                int idx = FindSpeciesIndex(s.Species);
+                if (idx > 0 && !valid.Contains(idx))
+                    valid.Add(idx);
+            }
+        }
+        AddSlots(tj.BaseSlots);
+        if (tj.SosTables != null)
+            foreach (var sos in tj.SosTables)
+                AddSlots(sos);
+        AddSlots(tj.WeatherSlots);
+    }
+
+    private void ApplyTable(EncounterTable table, TableJson tj, List<int> validFallback)
+    {
+        if (tj == null) return;
+        table.MinLevel = tj.MinLevel;
+        table.MaxLevel = tj.MaxLevel;
+        if (tj.Rates != null && tj.Rates.Length == table.Rates.Length)
+            Array.Copy(tj.Rates, table.Rates, table.Rates.Length);
+
+        ApplySlots(table.Encounter7s[0], tj.BaseSlots, validFallback);
+        if (tj.SosTables != null)
+        {
+            for (int i = 0; i < Math.Min(7, tj.SosTables.Count); i++)
+                ApplySlots(table.Encounter7s[i + 1], tj.SosTables[i], validFallback);
+        }
+        ApplySlots(table.AdditionalSOS, tj.WeatherSlots, validFallback);
+    }
+
+    private void ApplySlots(Encounter7[] target, List<SlotJson> source, List<int> validFallback)
+    {
+        if (target == null || source == null) return;
+        int count = Math.Min(target.Length, source.Count);
+        for (int i = 0; i < count; i++)
+        {
+            var s = source[i];
+            int idx = FindSpeciesIndex(s.Species);
+            if (idx <= 0 && validFallback.Count > 0)
+                idx = validFallback[i % validFallback.Count];
+            target[i].Species = (uint)idx;
+            target[i].Forme = (uint)Math.Max(0, s.Form);
+        }
+    }
+
+    private int FindSpeciesIndex(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || name == "(None)" || name == "---")
+            return 0;
+
+        int idx = Array.IndexOf(speciesList, name);
+        if (idx >= 0) return idx;
+
+        idx = Array.FindIndex(speciesList, x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0) return idx;
+
+        int bestIdx = 0;
+        int bestDist = int.MaxValue;
+        string target = name.ToLowerInvariant();
+        for (int i = 1; i < speciesList.Length; i++)
+        {
+            if (string.IsNullOrEmpty(speciesList[i])) continue;
+            int dist = LevenshteinDistance(target, speciesList[i].ToLowerInvariant());
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestIdx = i;
+            }
+        }
+
+        int maxAccept = Math.Max(1, name.Length / 5);
+        if (bestDist <= maxAccept)
+            return bestIdx;
+
+        return 0;
+    }
+
+    private static int LevenshteinDistance(string a, string b)
+    {
+        if (string.IsNullOrEmpty(a)) return b?.Length ?? 0;
+        if (string.IsNullOrEmpty(b)) return a.Length;
+
+        int n = a.Length;
+        int m = b.Length;
+        var d = new int[n + 1, m + 1];
+
+        for (int i = 0; i <= n; i++) d[i, 0] = i;
+        for (int j = 0; j <= m; j++) d[0, j] = j;
+
+        for (int i = 1; i <= n; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                d[i, j] = Math.Min(
+                    Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
+                    d[i - 1, j - 1] + cost);
+            }
+        }
+        return d[n, m];
+    }
+
+    // JSON models
+    private class EncounterJson
+    {
+        public string Game { get; set; } = "SM";
+        public List<AreaJson> Areas { get; set; } = [];
+    }
+
+    private class AreaJson
+    {
+        public int FileNumber { get; set; }
+        public string Name { get; set; } = "";
+        public bool HasTables { get; set; }
+        public List<TableJson> Tables { get; set; } = [];
+    }
+
+    private class TableJson
+    {
+        public int MinLevel { get; set; }
+        public int MaxLevel { get; set; }
+        public int[] Rates { get; set; } = [];
+        public List<SlotJson> BaseSlots { get; set; } = [];
+        public List<List<SlotJson>> SosTables { get; set; } = [];
+        public List<SlotJson> WeatherSlots { get; set; } = [];
+    }
+
+    private class SlotJson
+    {
+        public string Species { get; set; } = "";
+        public int Form { get; set; }
     }
 
     // Randomization & Bulk Modification
